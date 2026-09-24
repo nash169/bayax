@@ -141,13 +141,19 @@ class LinearOperator(ABC):
         """
         raise NotImplementedError(f"Method not implemented.")
 
-    def lowrank(
-        self,
-    ) -> Self:
-        r"""
-        Return low rank operator
+    def lowrank(self, *, k=None, eps=1e-8, method='dense', **kwargs) -> Self:
+        """Singular triplets: exact SVD or matrix-free randomized/Lanczos.
+
+        The exact method materializes the operator; iterative methods require
+        k and forward/transpose products. eps thresholds singular values.
         """
-        raise NotImplementedError(f"Method not implemented.")
+        from bayax.linalg.svd import svd
+        from bayax.operators.low_rank_operator import LowRankOperator
+        left, values, right_t = svd(
+            self.mv, shape=self.shape, rmv=self.transpose().mv,
+            k=k, method=method, **kwargs,
+        )
+        return LowRankOperator(sval=values, left=left, right=right_t.T, eps=eps)
 
     def squareroot(
         self,

@@ -89,10 +89,14 @@ class DenseOperator(LinearOperator):
 
     def lowrank(
         self,
-        zero_tol: Scalar = 1e-8,
-        jitter: Optional[Scalar] = None,
+        *,
+        k=None,
+        eps: Scalar = 1e-8,
+        method='dense',
         **kwargs
     ) -> LinearOperator:
+        """Reduced SVD, optionally truncated to k singular modes."""
+        from bayax.linalg.svd import svd
         from bayax.operators.low_rank_operator import LowRankOperator
-        left, vals, right = jnp.linalg.svd(self._mat, **kwargs)
-        return LowRankOperator(diag=vals, right=left, left=right, zero_tol=zero_tol, jitter=jitter)
+        left, vals, right_t = svd(self._mat, k=k, method=method, **kwargs)
+        return LowRankOperator(sval=vals, left=left, right=right_t.T, eps=eps)
