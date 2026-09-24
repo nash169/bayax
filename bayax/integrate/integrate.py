@@ -9,12 +9,13 @@ from bayax.utils.types import Callable, Optional
 
 
 def integrate(
-    f: Callable,
+    f: Callable | tuple[Callable, Callable],
     integrator: Callable,
     dt: float = 0.01,
     T: float = 1.0,
     u: Optional[Callable] = None,
     seed: Optional[int] = None,
+    **kwargs,
 ):
     key = jr.key(seed) if seed is not None else None
 
@@ -27,7 +28,8 @@ def integrate(
             key, subkey = jr.split(key)
 
         # integrate
-        x = integrator(f=f if key is None else lambda t, x, u: f(t=t, x=x, u=u, key=subkey), t=t, x=x, u=u, dt=dt)
+        x = integrator(f=f, t=t, x=x, u=u, dt=dt, **({"key": subkey} if key is not None else {}), **kwargs)
+        # x = integrator(f=f if key is None else lambda t, x, u: f(t=t, x=x, u=u, key=subkey), t=t, x=x, u=u, dt=dt)
 
         return (x, key), (x,)
 
