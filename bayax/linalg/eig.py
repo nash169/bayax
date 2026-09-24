@@ -14,30 +14,38 @@ def eigh(
     mv: Array | Callable[[Array], Array],
     n: int,
     *,
-    method: str = 'symeig',
+    method: str = 'dense',
     k: Optional[int] = None,
     m: Optional[int] = None,
     tol: float = 1e-4,
     key: Optional[Array] = None,
+    dtype=None,
     **kwargs
 ) -> Tuple[Vector, Matrix]:
-    if method == 'symeig':
-        d, v = jnp.linalg.eigh(jax.vmap(mv, in_axes=(1,), out_axes=1)(jnp.eye(n)) if isinstance(mv, Callable) else mv)
+    """Symmetric eigenpairs; dense and Lanczos share k/dtype options.
+
+    ``symeig`` remains an alias for ``dense``.
+    """
+    if method in ('dense', 'symeig'):
+        d, v = jnp.linalg.eigh(jax.vmap(mv, in_axes=(1,), out_axes=1)(jnp.eye(n, dtype=dtype)) if isinstance(mv, Callable) else mv)
         d, v = jnp.flip(d), jnp.flip(v, axis=1)
         if k is not None:
             d, v = d[:k], v[:, :k]
     elif method == 'lanczos':
         assert k is not None
         key, subkey = jax.random.split(key if key is not None else jax.random.key(0))
-        alpha, beta, Q = lanczos_tridiag(mv, n, m=m if m is not None else k, key=key, **kwargs)
+        operator = mv if isinstance(mv, Callable) else lambda v: mv @ v
+        alpha, beta, Q = lanczos_tridiag(
+            operator, n, m=m if m is not None else k, key=key,
+            **({"dtype": dtype} if dtype is not None else {}), **kwargs,
+        )
         d, v = _eig_lanczos(k, alpha, beta, Q, descending=True, key=subkey)
     elif method == 'lobpcg':
         assert k is not None
         d, v, _ = lobpcg_standard(jax.vmap(mv, in_axes=(1,), out_axes=1), jax.random.uniform(
             key if key is not None else jax.random.key(0), shape=(n, k)), m=m if m is not None else k, tol=tol)
     else:
-        msg = "provide valid method ['symeig', 'lanczos', 'lobpcg']"
-        ValueError(msg)
+        raise ValueError("method must be 'dense', 'lanczos', or 'lobpcg'")
     return d, v
 
 
