@@ -115,7 +115,8 @@ class LinearOperator(ABC):
         """
         if self.shape[0] == self.shape[1]:
             warnings.warn("Default `logdet` methods.")
-            return jnp.linalg.slogdet(self.dense())
+            sign, logdet = jnp.linalg.slogdet(self.dense()._mat)
+            return jnp.where(sign > 0, logdet, jnp.inf)
         else:
             raise NotImplementedError(f"Method not implemented.")
 
@@ -129,17 +130,6 @@ class LinearOperator(ABC):
         mv, solve = self.mv, self.solve
         self.mv, self.solve = solve, mv
         return self
-
-# ====================================================================================================
-# Operator specific methods
-# ====================================================================================================
-    def diagonalize(
-        self,
-    ) -> tuple[Vector, Matrix]:
-        r"""
-        Return determinant of the linear operator
-        """
-        raise NotImplementedError(f"Method not implemented.")
 
     def lowrank(self, *, k=None, eps=1e-8, method='dense', **kwargs) -> Self:
         """Singular triplets: exact SVD or matrix-free randomized/Lanczos.
@@ -155,11 +145,40 @@ class LinearOperator(ABC):
         )
         return LowRankOperator(sval=values, left=left, right=right_t.T, eps=eps)
 
-    def squareroot(
+# ====================================================================================================
+# Operator specific methods
+# ====================================================================================================
+    def diagonalize(
+        self,
+    ) -> tuple[Vector, Matrix]:
+        r"""
+        Diagonalize operator
+        """
+        raise NotImplementedError(f"Method not implemented.")
+
+    def sqrt(
         self,
     ) -> Self:
         r"""
-        Return low rank operator
+        Return operator square root
+        """
+        raise NotImplementedError(f"Method not implemented.")
+
+    def sqrtf(
+        self,
+    ) -> Self:
+        r"""
+        Return operator square root factor
+        """
+        raise NotImplementedError(f"Method not implemented.")
+
+    @staticmethod
+    def random(
+        key,
+        **kwargs
+    ) -> Self:
+        r"""
+        Return random operator
         """
         raise NotImplementedError(f"Method not implemented.")
 
