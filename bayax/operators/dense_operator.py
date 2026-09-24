@@ -62,7 +62,29 @@ class DenseOperator(LinearOperator):
         """
         return jnp.linalg.det(self._mat)
 
-    def inv_quad(
+    def logdet(
+        self,
+    ) -> Scalar:
+        r"""
+        Return log determinant of the linear operator
+        """
+        assert self._mat.shape[0] == self._mat.shape[1], RuntimeError("Not valid operation for rectangular operators")
+        sign, logdet = jnp.linalg.slogdet(self._mat)
+        return jnp.where(sign > 0, logdet, jnp.inf)
+
+    def sqrtf(
+        self,
+    ) -> LinearOperator:
+        r"""
+        Return square root factor of the linear operator
+
+        Cholesky factor L with L L^T equal to the operator, so the operator has
+        to be symmetric positive definite.
+        """
+        assert self._mat.shape[0] == self._mat.shape[1], RuntimeError("Not valid operation for rectangular operators")
+        return DenseOperator(jnp.linalg.cholesky(self._mat))
+
+    def invquad(
         self,
         vec: Vector
     ) -> Scalar:
@@ -71,13 +93,13 @@ class DenseOperator(LinearOperator):
         """
         return jnp.matmul(jnp.transpose(vec), self.solve(vec))
 
-    def dense_operator(
+    def dense(
         self,
-    ) -> Matrix:
+    ) -> LinearOperator:
         r"""
         Return dense matrix representation of the linear operator
         """
-        return self._mat
+        return self
 
     def diag(
         self,
