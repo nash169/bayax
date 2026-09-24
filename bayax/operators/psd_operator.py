@@ -3,9 +3,10 @@
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 from jax.scipy.sparse.linalg import cg
 
-from bayax.utils.types import Scalar, Vector, Matrix, Optional, Callable, Array, VectorInt
+from bayax.utils.types import Scalar, Vector, Matrix, Optional, Callable, Array, VectorInt, Self
 from bayax.operators.linear_operator import LinearOperator
 from bayax.operators import DenseOperator, SymOperator
 
@@ -17,7 +18,6 @@ class PSDOperator(SymOperator):
         op: Optional[Matrix | Callable] = None,
         op_type: Optional[str] = None,
         op_size: Optional[int] = None,
-        rng_key: Optional[Array] = None
     ) -> None:
         r"""
         mat_type: ['raw', 'tril', 'triu']
@@ -44,14 +44,6 @@ class PSDOperator(SymOperator):
                 self._op_size = op_size
             else:
                 msg = "invalid operator [ Matrix | Callable ]"
-        else:
-            assert (op_size is not None), "No operator provided; define operator dimension to generate random PSD."
-            if rng_key is None:
-                rng_key = jax.random.key(0)
-            mat = jax.random.uniform(jax.random.split(rng_key)[1], shape=(op_size, op_size))
-            mat = mat + mat.T + 100 * jnp.eye(op_size)
-            self._op = jnp.linalg.cholesky(mat)
-            self._op_is_tril = True
 
     def tree_flatten(self):
         if isinstance(self._op, Callable):
@@ -119,13 +111,14 @@ class PSDOperator(SymOperator):
 
     def lowrank(
         self,
-        zero_tol: Scalar = 1e-8,
-        jitter: Optional[Scalar] = None,
+        eps: Scalar = 1e-8,
+        jimg: Optional[Scalar] = None,
+        jker: Optional[Scalar] = None,
         **kwargs
     ) -> LinearOperator:
         from bayax.operators.low_rank_operator import LowRankOperator
         eigval, eigvec = self.diagonalize(**kwargs)
-        return LowRankOperator(diag=eigval, right=eigvec, zero_tol=zero_tol, jitter=jitter)
+        return LowRankOperator(sval=eigval, left=eigvec, eps=eps, jimg=jimg, jker=jker)
 
     def sqrtf(
         self,
@@ -136,7 +129,30 @@ class PSDOperator(SymOperator):
                 from bayax.operators import DenseOperator
                 return DenseOperator(jnp.linalg.cholesky(self.dense()._mat))
             else:
-                return self.lowrank().squareroot()
+                return self.lowrank(**kwargs).sqrtf()
         else:
             from bayax.operators import DenseOperator
             return DenseOperator(self._op)
+
+    @staticmethod
+    def random(
+        key,
+        m: int,
+        op_type: str = "raw"
+    ) -> Self:
+        k1, k2 = jr.split(key)
+
+        d = jr.uniform(k1, (m,))
+        u = jnp.linalg.qr(jr.normal(k2, (m, m)))[0]
+        mat = u @ jnp.diag(d) @ u.T
+
+        if op_type == "raw":
+            return PSDOperator(op=mat, op_type="raw")
+        elif op_type == "tril":
+            return PSDOperator(op=jnp.linalg.cholesky(mat, upper=False), op_type="tril")
+        elif op_type == "triu":
+            return PSDOperator(op=jnp.linalg.cholesky(mat, upper=True), op_type="triu")
+        elif op_type == "mv":
+            return PSDOperator(op=lambda v: mat @ v, op_size=m)
+        else:
+            raise NotImplementedError()
