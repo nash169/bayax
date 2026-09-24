@@ -9,6 +9,13 @@ from typing import Optional, Callable
 from jaxtyping import Array
 
 
+def _norm_above_tolerance(v, eps):
+    """Zero a converged residual before sqrt, keeping its derivative finite."""
+    squared = jnp.dot(v, v)
+    active = squared > eps**2
+    return jnp.where(active, jnp.sqrt(jnp.where(active, squared, 1.0)), 0.0)
+
+
 def lanczos_tridiag(
     mv: Callable[[Array], Array],
     n: int,
@@ -43,8 +50,8 @@ def lanczos_tridiag(
             coeffs = vecs @ w
             w = w - vecs.T @ coeffs
 
-        beta = jnp.linalg.norm(w)
-        vnext = jnp.where(beta > eps, w / beta, jnp.zeros_like(w))
+        beta = _norm_above_tolerance(w, eps)
+        vnext = jnp.where(beta > eps, w / jnp.where(beta > eps, beta, 1.0), jnp.zeros_like(w))
 
         vecs = jax.lax.cond(i + 1 < m, lambda q: q.at[i + 1].set(vnext), lambda q: q, vecs)
 
@@ -105,8 +112,8 @@ def lanczos_bidiag(
         for _ in range(reorth):
             p = p - U.T @ (U @ p)
 
-        a = jnp.linalg.norm(p)
-        u = p * jnp.where(a > eps, 1.0 / a, 0.0)
+        a = _norm_above_tolerance(p, eps)
+        u = p * jnp.where(a > eps, 1.0 / jnp.where(a > eps, a, 1.0), 0.0)
 
         U = U.at[i].set(u)
         alpha = alpha.at[i].set(a.astype(dtype))
@@ -119,8 +126,8 @@ def lanczos_bidiag(
         for _ in range(reorth):
             r = r - V.T @ (V @ r)
 
-        b = jnp.linalg.norm(r)
-        v_next = r * jnp.where(b > eps, 1.0 / b, 0.0)
+        b = _norm_above_tolerance(r, eps)
+        v_next = r * jnp.where(b > eps, 1.0 / jnp.where(b > eps, b, 1.0), 0.0)
 
         V = V.at[i + 1].set(v_next)
         beta = beta.at[i].set(b.astype(dtype))
