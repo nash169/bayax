@@ -20,7 +20,7 @@ class SumOperator(LinearOperator):
         r"""
         Define set of arrays needed for the linear operator
         """
-        assert all(ops[0].shape == ops[1].shape), "Error: cannot sum operators with different dimension."
+        assert ops[0].shape == ops[1].shape, "Error: cannot sum operators with different dimension."
         self._ops = ops
 
     def size(
@@ -57,10 +57,30 @@ class SumOperator(LinearOperator):
         Return solve of the linear operator
         """
         if any(isinstance(op, LowRankOperator) for op in self._ops) and any(isinstance(op, DiagOperator) for op in self._ops):
-            from bayax.linalg.woodbury_solve import woodbury_solve
             lowrank_op = [op for op in self._ops if isinstance(op, LowRankOperator)][0]
             diag_op = [op for op in self._ops if isinstance(op, DiagOperator)][0]
-            return woodbury_solve(lowrank_op.right, lowrank_op.diag, diag_op.diag, vec)
+            # Effective spectrum: eps classifies the kernel modes, jimg shifts
+            # the image ones and jker fills the (possibly unstored) complement.
+            complement = 0.0 if lowrank_op.jker is None else lowrank_op.jker
+            values = jnp.where(
+                lowrank_op.ker,
+                complement,
+                lowrank_op.sval if lowrank_op.jimg is None else lowrank_op.sval + lowrank_op.jimg,
+            )
+            base_diag = diag_op.diag + complement
+            if jnp.ndim(base_diag) == 0:
+                projected = lowrank_op.right.T @ vec
+                res = lowrank_op.left @ (projected / (values + diag_op.diag))
+                if lowrank_op.sval.shape[0] < lowrank_op.size()[0]:
+                    res += (vec - lowrank_op.left @ projected) / base_diag
+                return res
+            weights = values - complement
+            inv_vec = vec / base_diag
+            inv_left = lowrank_op.left / base_diag[:, None]
+            # Woodbury without inverting weights: they may be zero or negative.
+            core = jnp.eye(weights.shape[0], dtype=weights.dtype) + weights[:, None] * (lowrank_op.right.T @ inv_left)
+            rhs = weights * (lowrank_op.right.T @ inv_vec)
+            return inv_vec - inv_left @ jnp.linalg.solve(core, rhs)
         elif any(isinstance(op, PSDOperator) for op in self._ops) and any(isinstance(op, DiagOperator) for op in self._ops):
             from bayax.linalg.woodbury_solve import woodbury_chol_solve
             psd_op = [op for op in self._ops if isinstance(op, PSDOperator)][0]
@@ -89,11 +109,11 @@ class SumOperator(LinearOperator):
         from bayax.operators.low_rank_operator import LowRankOperator
         if all(issubclass(type(op), (LowRankOperator, SymOperator)) for op in self._ops):
             eigval, eigvec = self.diagonalize(**kwargs)
-            return LowRankOperator(diag=eigval, right=eigvec)
+            return LowRankOperator(sval=eigval, left=eigvec)
         else:
             return super().lowrank()
 
-    def squareroot(
+    def sqrtf(
         self,
         **kwargs
     ) -> LinearOperator:
@@ -102,6 +122,6 @@ class SumOperator(LinearOperator):
                 from bayax.operators import DenseOperator
                 return DenseOperator(jnp.linalg.cholesky(self.dense()._mat))
             else:
-                return self.lowrank(**kwargs).squareroot()
+                return self.lowrank(**kwargs).sqrtf()
         else:
-            return super().squareroot()
+            return super().sqrtf()
