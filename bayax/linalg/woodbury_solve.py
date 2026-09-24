@@ -17,12 +17,12 @@ def woodbury_solve(
     d: Scalar | Vector,
     v: Vector
 ):
-    """Woodbury matrix identity implementation for solving specifically system of PSD plus diagonal matrix.
-    A = L L^T + D
-    A^{-1} b = D^{-1} v - D^{-1} L (I + L^T D^{-1} L)^{-1} L^T D^{-1} v
+    """
+    A = U S U^T + D
 
     Args
-      L: Low-rank approximation of PSD.
+      U: PSD Eigenvectors.
+      s: PSD Eigenvalues, S = diag{s}
       d: Diagonal matrix, D = diag{d}.
       v: Vector.
 
@@ -42,7 +42,7 @@ def woodbury_chol_solve(
     d: Scalar | Vector,
     v: Vector
 ):
-    """Woodbury matrix identity implementation for solving specifically system of PSD plus diagonal matrix.
+    """
     A = L L^T + D
     A^{-1} b = D^{-1} v - D^{-1} L (I + L^T D^{-1} L)^{-1} L^T D^{-1} v
 
