@@ -76,3 +76,42 @@ class AbstractDensity(ABC):
         Return handles for hessian function with respect to the params.
         """
         raise NotImplementedError(f"Method not implemented.")
+
+
+@jax.tree_util.register_pytree_node_class
+class ProjectedDensity(AbstractDensity):
+    def __init__(self, density, lift, project, anchor):
+        self.density = density
+        self.lift = lift
+        self.project = project
+        self.anchor = anchor
+
+    def tree_flatten(self):
+        return (self.density, self.anchor), (self.lift, self.project)
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        density, anchor = children
+        lift, project = aux
+        return cls(density, lift, project, anchor)
+
+    # Pullback
+    def __call__(self, x, **kwargs):
+        return self.density(self.lift(x), **kwargs)
+
+    # Pushforward
+    def sample(self, key=None, **kwargs):
+        samples = self.density.sample(key=key, **kwargs)
+        if samples.ndim == 1:
+            return self.project(samples, self.anchor)
+        # Batched draws are stacked along the trailing axis; project each one.
+        return jax.vmap(self.project, in_axes=(1, None), out_axes=1)(samples, self.anchor)
+
+    def jvp(self, x, v, **kwargs):
+        lifted, dlifted = jax.jvp(self.lift, (x,), (v,))
+        return self.density.jvp(lifted, dlifted, **kwargs)
+
+    def hvp(self, x, v, **kwargs):
+        """Gauss-Newton pullback J^T H J v; the curvature of ``lift`` is dropped."""
+        lifted, dlifted = jax.jvp(self.lift, (x,), (v,))
+        return jax.vjp(self.lift, x)[1](self.density.hvp(lifted, dlifted, **kwargs))[0]
