@@ -21,6 +21,8 @@ def hmc(
     dH: Optional[tuple[Callable, Callable]] = None,
     u: Optional[Callable] = None,
     seed: int = 0,
+    aux_kernel: Optional[Callable] = None,
+    prob_aux_kernel: float = 0.1,
     **kwargs,
 ):
     """
@@ -88,4 +90,6 @@ def hmc(
         kernel,
         num_steps=num_steps,
         seed=seed,
+        aux_kernel=aux_kernel,
+        prob_aux_kernel=prob_aux_kernel
     )((x, p_pdf(x)))

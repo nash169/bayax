@@ -16,6 +16,8 @@ def mala(
     q: Callable = gaussian_kernel,
     u: Optional[Callable] = None,
     seed: int = 0,
+    aux_kernel: Optional[Callable] = None,
+    prob_aux_kernel: float = 0.1
 ):
     def proposal(x, log_q_curr, iter, key):
         # t = iter*dt
@@ -34,4 +36,6 @@ def mala(
         mh(log_prob, proposal, True),
         num_steps=num_steps,
         seed=seed,
+        aux_kernel=aux_kernel,
+        prob_aux_kernel=prob_aux_kernel
     )((x, q(f, 0.0, x, u, dt)))
