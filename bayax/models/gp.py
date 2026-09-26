@@ -49,7 +49,7 @@ class GP(nnx.Module):
                     for i, p in enumerate(k_params)
                 ]
             )
-        self.kernel = kernel
+        self.k_fn = kernel
 
         if mean is not None:
             key, subkey = jr.split(key)
@@ -64,51 +64,7 @@ class GP(nnx.Module):
                         for i, p in enumerate(mu_params)
                     ]
                 )
-            self.mean = mean
-
-    def mu_fn(self, x: Vector):
-        return (
-            self.mean(x, *self.mean_params)
-            if hasattr(self, "mean_params")
-            else self.mean(x)
-        )
-
-    def k_fn(self, x: Vector, y: Vector):
-        return (
-            self.kernel(x, y, *self.kernel_params)
-            if hasattr(self, "kernel_params")
-            else self.kernel(x, y)
-        )
-
-    def cov_fn(self, x: Vector | Matrix):
-        noise = jnp.exp(self.noise).squeeze() + 1e-6
-        return gram(self.k_fn, x, noise)
-
-    def prior(self, x: Vector | Matrix):
-        return MultivariateNormal(
-            cov=PSDOperator(op=self.cov_fn(x), op_size=x.shape[0]),
-            mean=self.mu_fn(x) if hasattr(self, "mean") else None,
-        )
-
-    def __call__(self, x: Vector, y: Vector):
-        return self.prior(x)(y)
-
-    def posterior_mu(self, X, y):
-        k_xy = lambda x: jax.vmap(self.k_fn, in_axes=(None, 0))(x, X).squeeze()
-        prior_cov = PSDOperator(op=self.cov_fn(X), op_size=X.shape[0])
-        if hasattr(self, "mean"):
-            mean_X = self.mu_fn(X).squeeze()
-            return lambda x: self.mu_fn(x) + k_xy(x) @ prior_cov.solve(y - mean_X)
-        return lambda x: k_xy(x) @ prior_cov.solve(y)
-
-    def posterior_cov(self, X):
-        prior_cov = PSDOperator(op=self.cov_fn(X), op_size=X.shape[0])
-        k_xy = lambda x: jax.vmap(self.k_fn, in_axes=(None, 0))(x, X).squeeze()
-        k_yx = lambda x: jax.vmap(self.k_fn, in_axes=(0, None))(X, x).squeeze()
-        return lambda x, y: self.k_fn(x, y) - k_xy(x) @ prior_cov.solve(k_yx(y))
-
-    def posterior_var(self, X):
-        return lambda x: self.posterior_cov(X)(x, x)
+            self.mu_fn = mean
 
     @property
     def params(self) -> Vector:
@@ -117,4 +73,82 @@ class GP(nnx.Module):
     @params.setter
     def params(self, value):
         nnx.update(self, array_to_pytree(value, nnx.state(self)))
-        # self = nnx.merge(nnx.split(self)[0], value)
+
+# ====================================================================================================
+# Prior
+# ====================================================================================================
+
+    def mean(self, x: Vector | Matrix):
+        return (
+            self.mu_fn(x, *self.mean_params)
+            if hasattr(self, "mean_params")
+            else self.mu_fn(x)
+        ) if hasattr(self, "mu_fn") else None
+
+    def kernel(self, x: Vector, y: Vector):
+        return (
+            self.k_fn(x, y, *self.kernel_params)
+            if hasattr(self, "kernel_params")
+            else self.k_fn(x, y)
+        )
+
+    def var(
+        self,
+        X: Vector | Matrix,
+        **kwargs
+    ):
+        return jax.vmap(lambda x: self.kernel(x, x))(X)
+
+    def cov(self, X: Vector | Matrix):
+        noise = jnp.exp(self.noise).squeeze() + 1e-6
+        return PSDOperator(op=gram(self.kernel, X, noise), op_size=X.shape[0])
+
+    def __call__(self, X: Vector | Matrix):
+        return MultivariateNormal(cov=self.cov(X), mean=jax.vmap(self.mean)(X) if hasattr(self, "mu_fn") else None)
+
+# ====================================================================================================
+# Posterior
+# ====================================================================================================
+
+    def posterior_mean(
+        self,
+        X: Vector | Matrix,
+        y: Vector,
+        **kwargs
+    ):
+        k_xy = lambda x: jax.vmap(self.kernel, in_axes=(None, 0))(x, X).squeeze()
+        if hasattr(self, "mu_fn"):
+            return lambda x: self.mean(x) + k_xy(x) @ self.cov(X).solve(y.squeeze() - self.mean(X).squeeze(), **kwargs)
+        return lambda x: k_xy(x) @ self.cov(X).solve(y.squeeze(), **kwargs)
+
+    def posterior_kernel(
+        self,
+        X: Vector | Matrix,
+        **kwargs
+    ):
+        k_xy = lambda x: jax.vmap(self.kernel, in_axes=(None, 0))(x, X).squeeze()
+        k_yx = lambda x: jax.vmap(self.kernel, in_axes=(0, None))(X, x).squeeze()
+        return lambda x, y: self.kernel(x, y) - k_xy(x) @ self.cov(X).solve(k_yx(y), **kwargs)
+
+    def posterior_var(
+        self,
+        X: Vector | Matrix,
+        **kwargs
+    ):
+        return lambda x: jax.vmap(lambda z: self.posterior_kernel(X, **kwargs)(z, z))(x)
+
+    def posterior_cov(
+        self,
+        X: Vector | Matrix,
+        **kwargs
+    ):
+        noise = jnp.exp(self.noise).squeeze() + 1e-6
+        return lambda x: PSDOperator(op=gram(self.posterior_kernel(X, **kwargs), x, noise), op_size=x.shape[0])
+
+    def posterior(
+        self,
+        X: Vector | Matrix,
+        y: Vector,
+        **kwargs
+    ):
+        return lambda x: MultivariateNormal(cov=self.posterior_cov(X, **kwargs)(x), mean=jax.vmap(self.posterior_mean(X, y, **kwargs))(x))
