@@ -97,8 +97,8 @@ class SumOperator(LinearOperator):
         **kwargs
     ) -> tuple[Vector, Matrix]:
         if any(issubclass(type(op), SymOperator) for op in self._ops):
-            from bayax.linalg.diagonalize import diagonalize
-            return diagonalize(self.mv, self.shape[0], **kwargs)
+            from bayax.linalg.eig import eigh
+            return eigh(self, self.shape[0], **kwargs)
         else:
             return super().diagonalize()
 
