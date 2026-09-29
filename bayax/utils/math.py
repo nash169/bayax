@@ -166,3 +166,18 @@ def diag_hutchpp(
     diag_resid = jnp.mean(W * R, axis=1)
 
     return diag_lowrank + diag_resid
+
+
+def bandwidth(x, y=None, reduce_fn=jnp.median):
+    from bayax.kernels.rbf import rbf
+    k_rbf = jax.jit(
+        jax.vmap(
+            jax.vmap(rbf, in_axes=(None, 0, None, None)),
+            in_axes=(0, None, None, None),
+        )
+    )
+
+    z = x if y is None else jnp.concatenate([x, y], axis=0)
+    d2 = -2 * jnp.log(k_rbf(z, z, 0.0, 0.0))
+
+    return jnp.sqrt(0.5 * reduce_fn(d2[d2 > 0.0]))
