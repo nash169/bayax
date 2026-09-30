@@ -27,6 +27,10 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
     """
     Advance nonseparable dynamics ``f=(pdot, qdot)`` implicitly
 
+    If either fixed point stops at max_iter without meeting tol, the step
+    returns NaN, so the failure propagates through the trajectory and an
+    HMC proposal built on it is rejected.
+
     Callbacks may return a derivative or (derivative, cache). A returned
     pdot cache must also be accepted by qdot via its cache keyword. Reuse
     this cache only at the same position and time within the step.
@@ -58,14 +62,19 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
             # The initial force evaluation already supplies iteration one.
             iteration = jnp.asarray(max_iter > 0, dtype=jnp.int32)
             value = jnp.where(max_iter > 0, first, initial)
-            error = jnp.linalg.norm(value - initial, ord=jnp.inf)
+            error = jnp.where(
+                max_iter > 0,
+                jnp.linalg.norm(value - initial, ord=jnp.inf),
+                jnp.inf,
+            )
             scale = 1.0 + jnp.linalg.norm(value, ord=jnp.inf)
 
-        return jax.lax.while_loop(
+        _, value, error, scale = jax.lax.while_loop(
             cond,
             step,
             (iteration, value, error, scale),
-        )[1]
+        )
+        return value, error <= tol * scale
 
     pdot_initial, cache_left = evaluate(pdot, t, x)
 
@@ -78,7 +87,7 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
         )
         return p + 0.5 * dt * derivative
 
-    p_half = fixed_point(update_p_half, p, first=p + 0.5 * dt * pdot_initial)
+    p_half, p_converged = fixed_point(update_p_half, p, first=p + 0.5 * dt * pdot_initial)
     qdot_left, _ = evaluate(qdot, t, jnp.concatenate((q, p_half)), cache_left)
 
     def update_q(q_new):
@@ -89,7 +98,7 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
         )
         return q + 0.5 * dt * (qdot_left + qdot_right)
 
-    q_new = fixed_point(update_q, q + dt * qdot_left)
+    q_new, q_converged = fixed_point(update_q, q + dt * qdot_left)
     # The final position is the output of the last fixed-point update, not
     # generally the position where its qdot was evaluated. Build a fresh cache.
     pdot_right, _ = evaluate(
@@ -99,4 +108,4 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
     )
     p_new = p_half + 0.5 * dt * pdot_right
 
-    return jnp.concatenate((q_new, p_new))
+    return jnp.where(p_converged & q_converged, jnp.concatenate((q_new, p_new)), jnp.nan)

@@ -30,7 +30,9 @@ def hmc(
 
     H may return a scalar or (value, cache). Supplied dH contains the signed
     dynamics (pdot, qdot) = (-dH/dq, dH/dp); generalized leapfrog also accepts
-    dynamics returning (derivative, cache).
+    dynamics returning (derivative, cache). A proposal with non-finite
+    energy, e.g. from an unconverged generalized leapfrog step, is flagged
+    as divergent and rejected.
     """
     if num_steps < 1:
         raise ValueError("num_steps must be at least 1")
@@ -70,7 +72,8 @@ def hmc(
         H_curr = energy(None, jnp.concat([q, p]), u)
         H_next = energy(None, jnp.concat([qn, pn]), u)
 
-        log_alpha = jnp.minimum(0.0, H_curr - H_next)
+        divergent = ~jnp.isfinite(H_next)
+        log_alpha = jnp.where(divergent, -jnp.inf, jnp.minimum(0.0, H_curr - H_next))
         accept = jnp.log(jr.uniform(accept_key, dtype=q.dtype)) < log_alpha
 
         carry = jax.lax.cond(
@@ -83,6 +86,7 @@ def hmc(
         info = {
             "accepted": accept,
             "log_alpha": log_alpha,
+            "divergent": divergent,
         }
         return carry, info
 
