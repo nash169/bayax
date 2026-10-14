@@ -147,12 +147,12 @@ def make_sinusoid(
     return X_train.reshape(-1, 1), y_train.reshape(-1, 1), X_valid.reshape(-1, 1), y_valid.reshape(-1, 1), X_test.reshape(-1, 1), y_test.reshape(-1, 1)
 
 
-def random_like(rng_key, x):
+def random_like(x, seed: int = 0, **kwargs):
     from bayax.operators import PSDOperator
     if isinstance(x, jax.Array):
-        return jax.random.uniform(jax.random.split(rng_key)[1], shape=x.shape)
+        return jax.random.uniform(jax.random.key(seed), shape=x.shape)
     elif isinstance(x, PSDOperator):
-        return PSDOperator(rng_key=jax.random.split(rng_key)[1], op_size=x.size()[0])
+        return PSDOperator.random(key=jax.random.key(seed), m=x.shape[0])
 
 
 def gradient_check(f, df, x, v):
