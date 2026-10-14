@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import inspect
 
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from bayax.utils.types import (
     Matrix,
     PyTree,
@@ -83,68 +83,115 @@ def wrap_array_function(f: Callable, tree: tuple[List, PyTreeDef] | PyTree):
     return fn_wrap
 
 
-def random_psd(dim):
-    import jax
-    import jax.numpy as jnp
+def make_datasets_classification(dataset: str = "moons", n1: int = 50, n2: int = 50, noise: float = 0.15, seed: int = 0):
+    if dataset == "moons":
+        rng = np.random.default_rng(seed)
+        t1 = rng.uniform(0.0, math.pi, size=n1)
+        t2 = rng.uniform(0.0, math.pi, size=n2)
+        x1 = np.stack([np.cos(t1), np.sin(t1)], axis=1)
+        x2 = np.stack([1.0 - np.cos(t2), 0.5 - np.sin(t2)], axis=1)
+        X = np.concatenate([x1, x2], axis=0)
+        y = np.concatenate([np.zeros(n1), np.ones(n2)], axis=0)
+        X = X + noise * rng.normal(size=X.shape)
+        perm = rng.permutation(n1 + n2)
+        X = jnp.asarray(X[perm], dtype=jnp.float64)
+        y = jnp.asarray(y[perm], dtype=jnp.float64).reshape(-1, 1)
+    elif dataset == "clusters":
+        X_1 = jax.random.multivariate_normal(jax.random.key(seed), jnp.array([-1, -1]), 0.2 * jnp.eye(2), shape=(n1,))
+        y_1 = jnp.zeros(n1)
+        X_2 = jax.random.multivariate_normal(jax.random.key(0), jnp.array([1, 1]), 0.2 * jnp.eye(2), shape=(n2,))
+        y_2 = jnp.ones(n2)
 
-    rng_key = jax.random.key(0)
-    mat = jax.random.uniform(rng_key, shape=dim)
-    mat = mat + mat.T + 100 * jnp.eye(dim)
-    return mat
-
-
-def make_moons(n: int = 300, noise: float = 0.15, seed: int = 0):
-    rng = np.random.default_rng(seed)
-    n1 = n // 2
-    n2 = n - n1
-    t1 = rng.uniform(0.0, math.pi, size=n1)
-    t2 = rng.uniform(0.0, math.pi, size=n2)
-    x1 = np.stack([np.cos(t1), np.sin(t1)], axis=1)
-    x2 = np.stack([1.0 - np.cos(t2), 0.5 - np.sin(t2)], axis=1)
-    X = np.concatenate([x1, x2], axis=0)
-    y = np.concatenate([np.zeros(n1), np.ones(n2)], axis=0)
-    X = X + noise * rng.normal(size=X.shape)
-    perm = rng.permutation(n)
-    X = jnp.asarray(X[perm], dtype=jnp.float64)
-    y = jnp.asarray(y[perm], dtype=jnp.float64).reshape(-1, 1)
-    return X, y
-
-
-def make_clusters(n: int = 30, m: int = 30, noise: float = 0.15, seed: int = 0):
-    X_1 = jax.random.multivariate_normal(jax.random.key(seed), jnp.array([-1, -1]), 0.2 * jnp.eye(2), shape=(n,))
-    y_1 = jnp.zeros(n)
-    X_2 = jax.random.multivariate_normal(jax.random.key(0), jnp.array([1, 1]), 0.2 * jnp.eye(2), shape=(m,))
-    y_2 = jnp.ones(m)
-
-    X = jnp.concatenate((X_1, X_2), axis=0)
-    y = jnp.concatenate((y_1, y_2))
+        X = jnp.concatenate((X_1, X_2), axis=0)
+        y = jnp.concatenate((y_1, y_2))
+    else:
+        raise ValueError("Unknown dataset.")
 
     return X, y
 
 
-def make_sinusoid(
+def make_datasets_regression(
+    func: Callable,
     n_train: int = 150,
     n_valid: int = 50,
     n_test: int = 100,
     noise: float = 0.15,
-    interval: tuple = (-1.0, 1.0),
-    sinus_factor: float = 1.0,
-    seed: int = 0
+    interval: tuple[float, float] = (-1.0, 1.0),
+    train_intervals: Sequence[tuple[float, float]] | None = None,
+    seed: int = 0,
 ):
+    """
+    Training: equally allocate points across train_intervals, then sample
+              uniformly within each interval. None uses the full domain.
+    Validation/test: sample uniformly over interval.
+    noise: standard deviation of independent Gaussian observation noise.
+
+    Returns:
+        X_train, y_train, X_valid, y_valid, X_test, y_test,
+        each with shape (n, 1).
+    """
+    low, high = interval
+
+    if not low < high:
+        raise ValueError("interval must satisfy low < high.")
+    if min(n_train, n_valid, n_test) < 0:
+        raise ValueError("Dataset sizes must be nonnegative.")
+    if noise < 0:
+        raise ValueError("noise must be nonnegative.")
+
+    train_intervals = (
+        [interval] if train_intervals is None else list(train_intervals)
+    )
+
+    if not train_intervals:
+        raise ValueError("train_intervals must contain at least one interval.")
+
+    for a, b in train_intervals:
+        if not low <= a < b <= high:
+            raise ValueError(
+                f"Training interval {(a, b)} must have a < b "
+                f"and lie within {interval}."
+            )
+
     keys = jr.split(jr.key(seed), 6)
 
-    X_train = jax.random.uniform(keys[0], minval=interval[0], maxval=-0.8, shape=(int(n_train / 3),))
-    X_train = jnp.append(X_train, jax.random.uniform(keys[0], minval=-0.1, maxval=0.1, shape=(int(n_train / 3),)))
-    X_train = jnp.append(X_train, jax.random.uniform(keys[0], minval=0.8, maxval=interval[1], shape=(n_train - X_train.shape[0],)))
-    y_train = jnp.sin(X_train * sinus_factor) + jr.normal(keys[1], X_train.shape) * noise
+    # Allocate exactly n_train points across any number of intervals.
+    n_intervals = len(train_intervals)
+    base_count, remainder = divmod(n_train, n_intervals)
+    train_keys = jr.split(keys[0], n_intervals)
 
-    X_valid = jax.random.uniform(keys[2], minval=interval[0], maxval=interval[1], shape=(n_valid,))
-    y_valid = jnp.sin(X_valid * sinus_factor) + jr.normal(keys[3], X_valid.shape) * noise
+    X_train = jnp.concatenate([
+        jr.uniform(
+            train_keys[i],
+            shape=(base_count + int(i < remainder),),
+            minval=a,
+            maxval=b,
+        )
+        for i, (a, b) in enumerate(train_intervals)
+    ])
 
-    X_test = jax.random.uniform(keys[4], minval=interval[0], maxval=interval[1], shape=(n_test,))
-    y_test = jnp.sin(X_test * sinus_factor) + jr.normal(keys[5], X_test.shape) * noise
+    X_valid = jr.uniform(
+        keys[2], shape=(n_valid,), minval=low, maxval=high
+    )
+    X_test = jr.uniform(
+        keys[4], shape=(n_test,), minval=low, maxval=high
+    )
 
-    return X_train.reshape(-1, 1), y_train.reshape(-1, 1), X_valid.reshape(-1, 1), y_valid.reshape(-1, 1), X_test.reshape(-1, 1), y_test.reshape(-1, 1)
+    # Vectorize the supplied scalar function over each dataset.
+    evaluate = jax.vmap(func)
+
+    y_train = evaluate(X_train) + noise * jr.normal(keys[1], X_train.shape)
+    y_valid = evaluate(X_valid) + noise * jr.normal(keys[3], X_valid.shape)
+    y_test = evaluate(X_test) + noise * jr.normal(keys[5], X_test.shape)
+
+    return (
+        X_train.reshape(-1, 1),
+        y_train.reshape(-1, 1),
+        X_valid.reshape(-1, 1),
+        y_valid.reshape(-1, 1),
+        X_test.reshape(-1, 1),
+        y_test.reshape(-1, 1),
+    )
 
 
 def random_like(x, seed: int = 0, **kwargs):
