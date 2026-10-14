@@ -23,7 +23,7 @@ def leapfrog(f, t, x, u, dt):
     return jnp.concatenate((q_new, p_new))
 
 
-def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
+def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50, reverse_tol=None):
     """
     Advance nonseparable dynamics ``f=(pdot, qdot)`` implicitly
 
@@ -31,10 +31,30 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
     returns NaN, so the failure propagates through the trajectory and an
     HMC proposal built on it is rejected.
 
+    With reverse_tol, the step is also checked for reversibility: a step
+    from the momentum-flipped result must return to the flipped start within
+    reverse_tol * (1 + ||x||_inf), otherwise the step returns NaN. This
+    catches fixed points converging to a different root in each direction.
+    The check assumes time-independent dynamics and doubles the cost.
+
     Callbacks may return a derivative or (derivative, cache). A returned
     pdot cache must also be accepted by qdot via its cache keyword. Reuse
     this cache only at the same position and time within the step.
     """
+    x_new, converged = _generalized_step(f, t, x, u, dt, tol, max_iter)
+
+    if reverse_tol is not None:
+        flip = lambda z: jnp.concatenate((z[:z.size // 2], -z[z.size // 2:]))
+        x_back, back_converged = _generalized_step(f, t + dt, flip(x_new), u, dt, tol, max_iter)
+        error = jnp.linalg.norm(flip(x_back) - x, ord=jnp.inf)
+        reversible = error <= reverse_tol * (1.0 + jnp.linalg.norm(x, ord=jnp.inf))
+        converged = converged & back_converged & reversible
+
+    return jnp.where(converged, x_new, jnp.nan)
+
+
+def _generalized_step(f, t, x, u, dt, tol, max_iter):
+    """One generalized leapfrog step and whether both fixed points converged."""
     pdot, qdot = f
     q, p = jnp.split(x, 2)
 
@@ -108,4 +128,4 @@ def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50):
     )
     p_new = p_half + 0.5 * dt * pdot_right
 
-    return jnp.where(p_converged & q_converged, jnp.concatenate((q_new, p_new)), jnp.nan)
+    return jnp.concatenate((q_new, p_new)), p_converged & q_converged
