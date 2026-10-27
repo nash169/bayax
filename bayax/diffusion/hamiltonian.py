@@ -17,7 +17,7 @@ def H_geom(
     logdet: bool = False
 ) -> Callable:
     """
-    Return the Hamiltonian using geom(q) -> EmbeddingCache
+    Return the Hamiltonian using geom(q) -> bayax.geom.embedding.EmbeddingGeom
 
     The optional cache is (g, potential_energy), where potential_energy
     includes the half log determinant and Gaussian normalization at q.
@@ -65,7 +65,7 @@ def dHdq_geom(
     logdet: bool = False
 ) -> Callable:
     """
-    Return the position gradient using geom(q) -> EmbeddingCache
+    Return the position gradient using geom(q) -> bayax.geom.embedding.EmbeddingGeom
 
     The optional cache is (g, potential_grad), where potential_grad is
     grad_energy(q) plus the half log-determinant gradient at q.
@@ -88,44 +88,35 @@ def dHdq_geom(
     return fn
 
 
-# def dHdq_geom_bkp(
-#     grad_energy: Callable,
-#     metric: Callable,
-#     christoffels: Callable,
-# ) -> Callable:
-#     r"""
-#     Calculate the Hamiltonian gradient with respect to q at fixed momentum
-#
-#     The log-determinant gradient contracts over the columns of the array
-#     B = g.inv_sqrt(), where B @ B.T is the inverse metric.
-#
-#     Args:
-#         grad_energy: Energy gradient
-#         metric: Callable returning a metric operator with solve and inv_sqrt
-#         christoffels: Contracted first-kind Christoffels (q, w, v)
-#     """
-#     def fn(t, x, u=None, cache=None):
-#         q, p = jnp.split(x, 2)
-#
-#         if cache is None:
-#             g = metric(q)
-#             g_inv_sqrt = g.metric_inv.sqrtf()._mat
-#
-#             def contractions(w):
-#                 return jax.vmap(
-#                     lambda b: christoffels(x, w, b),
-#                     in_axes=1,
-#                     out_axes=1,
-#                 )(g_inv_sqrt)
-#
-#             potential_grad = jax.linear_transpose(contractions, x)(g_inv_sqrt)[0] + grad_energy(q)
-#         else:  # position dependent quantities
-#             g, potential_grad = cache
-#
-#         # kinetic grad (q and p dependency cannot be cached)
-#         v = g.metric_solve(p)
-#         kinetic_grad = -jax.linear_transpose(lambda w: christoffels(q, w, v), q)(v)[0]
-#
-#         return potential_grad + kinetic_grad, cache
-#
-#     return fn
+def d2Hdqdp_geom(
+    geom: Callable,
+) -> Callable:
+    """
+    Return the momentum derivative A = d(dH/dq)/dp of dHdq_geom
+
+    The potential and log determinant gradients do not depend on p. With v = G^-1 p,
+    the rest of dH/dq is -cfk_mv(v, "ki") = p^T dG^-1 p / 2, so
+    A dp = -grad_q(v^T G w) = -(cfk_mv(v, w, "ki") + cfk_mv(w, v, "ki")) with w = G^-1 dp,
+    A^T z = (DG^-1[z]) p = -G^-1 (DG[z]) v.
+    pdot = -dH/dq has momentum derivative -A. Returns ((jvp, vjp), cache) for vectors,
+    reusing g at cache[0]; without a supplied cache, return the geom-only cache (g,).
+    """
+    def fn(t, x, u=None, cache=None):
+        q, p = jnp.split(x, 2)
+        if cache is None:
+            g = geom(q)
+            cache = (g,)
+        else:
+            g = cache[0]
+        v = g.metric_solve(p)
+
+        def jvp(dp):
+            w = g.metric_solve(dp)
+            return -(g.cfk_mv(v, w, contraction="ki") + g.cfk_mv(w, v, contraction="ki"))
+
+        def vjp(z):
+            return -g.metric_solve(g.metric_grad_mv(z, v))
+
+        return (jvp, vjp), cache
+
+    return fn
