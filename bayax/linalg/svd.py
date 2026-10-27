@@ -6,6 +6,16 @@ import jax.numpy as jnp
 from jaxtyping import Array
 
 
+def _svd(a, **kwargs):
+    """Reduced jnp.linalg.svd that returns NaN for a non-finite matrix without factorizing it.
+
+    On GPU, factorizing a matrix that contains NaN takes seconds instead of milliseconds.
+    """
+    finite = jnp.all(jnp.isfinite(a))
+    out = jnp.linalg.svd(jnp.where(finite, a, 0.0), full_matrices=False, **kwargs)
+    return jax.tree_util.tree_map(lambda o: jnp.where(finite, o, jnp.nan), out)
+
+
 def svd(op, *, shape=None, rmv=None, k=None, method='dense', dtype=None, **kwargs):
     """Reduced SVD of an array or linear map; returns U, s, V.T.
 
@@ -36,7 +46,7 @@ def svd(op, *, shape=None, rmv=None, k=None, method='dense', dtype=None, **kwarg
             raise ValueError('lowrank requires full_matrices=False')
         if not kwargs.pop('compute_uv', True):
             raise ValueError('lowrank requires compute_uv=True')
-        left, values, right_t = jnp.linalg.svd(matrix, full_matrices=False, **kwargs)
+        left, values, right_t = _svd(matrix, **kwargs)
         return left[:, :k], values[:k], right_t[:k]
 
     if method not in ('randomized', 'lanczos'):
@@ -53,6 +63,9 @@ def svd(op, *, shape=None, rmv=None, k=None, method='dense', dtype=None, **kwarg
             mv, rmv, shape, m=m, key=key, dtype=dtype, **kwargs,
         )
         values, left, right = _svd_lanczos(k, alpha, beta, U, V)
+        # a non-finite operator leaves finite (zero) alpha and beta but NaN Lanczos vectors
+        finite = jnp.all(jnp.isfinite(U)) & jnp.all(jnp.isfinite(V))
+        values, left, right = (jnp.where(finite, a, jnp.nan) for a in (values, left, right))
         return left, values, right.T
 
     oversampling = kwargs.pop('oversampling', 10)
@@ -68,7 +81,7 @@ def svd(op, *, shape=None, rmv=None, k=None, method='dense', dtype=None, **kwarg
     for _ in range(n_iter):
         P = jnp.linalg.qr(apply(rmv, Q), mode='reduced')[0]
         Q = jnp.linalg.qr(apply(mv, P), mode='reduced')[0]
-    left, values, right_t = jnp.linalg.svd(apply(rmv, Q).T, full_matrices=False)
+    left, values, right_t = _svd(apply(rmv, Q).T)
     return Q @ left[:, :k], values[:k], right_t[:k]
 
 
@@ -89,7 +102,7 @@ def _svd_lanczos(
     B = jnp.zeros((alpha.size, alpha.size + 1), dtype=alpha.dtype)
     rows = jnp.arange(alpha.size)
     B = B.at[rows, rows].set(alpha).at[rows, rows + 1].set(beta)
-    Ub, s, Vhb = jnp.linalg.svd(B, full_matrices=False)
+    Ub, s, Vhb = _svd(B)
 
     idx = jnp.argsort(s, descending=True)[:k]
     s = s[idx]
