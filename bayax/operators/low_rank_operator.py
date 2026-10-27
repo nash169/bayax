@@ -149,6 +149,13 @@ class LowRankOperator(LinearOperator):
             jker = jnp.where(jker == 0, 0.0, jnp.reciprocal(jnp.where(jker == 0, 1.0, jker)))
         return LowRankOperator(sval=d, left=self.right, right=None if self._right is None else self.left, eps=0.0, jker=jker)
 
+    # square root of the singular values, masked so zero modes have finite gradients
+    def _sqrt_sval(
+            self
+    ) -> Vector:
+        d = jnp.where(self.ker, 0.0 if self.jker is None else self.jker, self.sval if self.jimg is None else self.sval + self.jimg)
+        return jnp.where(d == 0, 0.0, jnp.sqrt(jnp.where(d == 0, 1.0, d)))
+
     # square root
     def sqrt(
             self
@@ -159,8 +166,7 @@ class LowRankOperator(LinearOperator):
             )
         # d = jnp.where(self.ker, 0.0, jnp.sqrt(self.sval) if self.jimg is None else jnp.sqrt(self.sval + self.jimg))
         # return LowRankOperator(sval=d, left=self.left, eps=self.eps, jker=None if self.jker is None else jnp.sqrt(self.jker))
-        d = jnp.where(self.ker, 0.0 if self.jker is None else self.jker, self.sval if self.jimg is None else self.sval + self.jimg)
-        d = jnp.where(d == 0, 0.0, jnp.sqrt(jnp.where(d == 0, 1.0, d)))
+        d = self._sqrt_sval()
         jker = self.jker
         if jker is not None:
             jker = jnp.where(jker == 0, 0.0, jnp.sqrt(jnp.where(jker == 0, 1.0, jker)))
