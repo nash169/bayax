@@ -75,7 +75,7 @@ class MLP(nnx.Module):
         self
     ) -> Callable:
         def fwd_linearized(x, p):
-            return self(x) + self.jvp()(x, p)(p - self.params)
+            return self(x) + self.jvp()(x, self.params)(p - self.params)
         return fwd_linearized
 
     def jtvp(
