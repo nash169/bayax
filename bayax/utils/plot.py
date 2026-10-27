@@ -14,14 +14,17 @@ def plot(
     fn_between: Optional[Callable | Vector] = None,
     range=[-1, 1],
     res=100,
+    axes_lim=None,
+    ax=None,
     fig=None,
     **kwargs
 ):
-    if fig is not None:
-        ax = fig.get_axes()[0]
-    else:
-        fig, ax = plt.subplots()
-        fig.tight_layout()
+    if ax is None:
+        if fig is not None:
+            ax = fig.get_axes()[0]
+        else:
+            fig, ax = plt.subplots()
+            fig.tight_layout()
 
     if isinstance(fn, Callable):
         x = jnp.linspace(range[0], range[1], res)
@@ -30,7 +33,12 @@ def plot(
         p_args = fn
 
     im = ax.plot(*p_args, **kwargs)
-    ax.set_xlim(p_args[0].min(), p_args[0].max())
+
+    if axes_lim is None:
+        ax.set_xlim(p_args[0].min(), p_args[0].max())
+    else:
+        ax.set_xlim(*axes_lim[0])
+        ax.set_ylim(*axes_lim[1])
 
     if not im[0].get_label().startswith("_"):
         ax.legend()
@@ -47,13 +55,14 @@ def plot(
             color=im[0].get_color()
         )
 
-    return fig
+    return fig if fig is not None else ax
 
 
 def scatter(
         data,
         ranges=None,
         axes_labels=None,
+        axes_aspect=None,
         cbar=None,
         ax=None,
         fig=None,
@@ -72,7 +81,10 @@ def scatter(
             ax = fig.add_subplot(111, projection='3d' if dim == 3 else None)
 
     im = ax.scatter(*data.T, **kwargs)
-    ax.set_aspect('equal', 'box')
+
+    if axes_aspect is not None:
+        ax.set_aspect(*axes_aspect)
+
     if not im.get_label().startswith("_"):
         ax.legend()
 
