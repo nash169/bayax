@@ -5,8 +5,6 @@ import jax
 import jax.numpy as jnp
 
 from bayax.utils.types import Callable, Optional
-from bayax.operators import PSDOperator
-from bayax.geom.embedding import pullmetric
 
 
 def christoffel_fk(
