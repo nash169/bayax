@@ -4,6 +4,10 @@
 import jax
 import jax.numpy as jnp
 
+from typing import Optional
+from bayax.solve import anderson, fixed_point
+from bayax.optim.lstsq import lstsq
+
 
 def leapfrog(f, t, x, u, dt):
     """Advance separable dynamics ``f=(pdot, qdot)`` by one leapfrog step."""
@@ -23,38 +27,43 @@ def leapfrog(f, t, x, u, dt):
     return jnp.concatenate((q_new, p_new))
 
 
-def generalized_leapfrog(f, t, x, u, dt, tol=1e-10, max_iter=50, reverse_tol=None):
+def gen_leapfrog(
+    f,
+    t,
+    x,
+    u,
+    dt,
+    momentum_solver="fixedpoint",
+    position_solver="fixedpoint",
+    momentum_kwargs: Optional[dict] = None,
+    position_kwargs: Optional[dict] = None,
+    cache=None,
+):
     """
-    Advance nonseparable dynamics ``f=(pdot, qdot)`` implicitly
+    Advance nonseparable dynamics ``f=(pdot, qdot)`` by one implicit generalized leapfrog step
 
-    If either fixed point stops at max_iter without meeting tol, the step
-    returns NaN, so the failure propagates through the trajectory and an
-    HMC proposal built on it is rejected.
+    momentum_solver finds p_half = p + dt/2 pdot(q, p_half): "fixedpoint" iterates it from the
+    explicit predictor; "gauss-newton" minimizes ||r||^2 / 2 for the residual
+    r(p_half) = p_half - p - dt/2 pdot(q, p_half) with bayax.solve.lstsq, matrix-free.
+    For "gauss-newton", momentum_kwargs must hold linearize(t, x, u, cache=None) returning
+    ((jvp, vjp), cache), the products of the momentum Jacobian d pdot / dp at x, from which
+    J^T and the curvature J^T J of the residual are built (solved by CG).
+    position_solver finds q_new = q + dt/2 (qdot(q, p_half) + qdot(q_new, p_half)) by
+    "fixedpoint" or "anderson" iteration. The other momentum_kwargs and position_kwargs
+    (tol, max_iter, ...) are passed to the selected solver.
 
-    With reverse_tol, the step is also checked for reversibility: a step
-    from the momentum-flipped result must return to the flipped start within
-    reverse_tol * (1 + ||x||_inf), otherwise the step returns NaN. This
-    catches fixed points converging to a different root in each direction.
-    The check assumes time-independent dynamics and doubles the cost.
-
-    Callbacks may return a derivative or (derivative, cache). A returned
-    pdot cache must also be accepted by qdot via its cache keyword. Reuse
-    this cache only at the same position and time within the step.
+    cache optionally supplies the pdot cache at x, e.g. a geometry already built at q. Callbacks
+    may return a derivative or (derivative, cache); the pdot cache at q is reused by the momentum
+    solve, linearize and the first qdot. Returns (x_new, cache), with the pdot cache built at
+    q_new by the final momentum half step, to pass to the next step. If either solve does not
+    converge, x_new is NaN.
     """
-    x_new, converged = _generalized_step(f, t, x, u, dt, tol, max_iter)
-
-    if reverse_tol is not None:
-        flip = lambda z: jnp.concatenate((z[:z.size // 2], -z[z.size // 2:]))
-        x_back, back_converged = _generalized_step(f, t + dt, flip(x_new), u, dt, tol, max_iter)
-        error = jnp.linalg.norm(flip(x_back) - x, ord=jnp.inf)
-        reversible = error <= reverse_tol * (1.0 + jnp.linalg.norm(x, ord=jnp.inf))
-        converged = converged & back_converged & reversible
-
-    return jnp.where(converged, x_new, jnp.nan)
-
-
-def _generalized_step(f, t, x, u, dt, tol, max_iter):
-    """One generalized leapfrog step and whether both fixed points converged."""
+    if momentum_solver not in ("fixedpoint", "gauss-newton"):
+        raise ValueError('momentum_solver must be "fixedpoint" or "gauss-newton"')
+    if position_solver not in ("fixedpoint", "anderson"):
+        raise ValueError('position_solver must be "fixedpoint" or "anderson"')
+    momentum_kwargs = dict(momentum_kwargs or {})
+    position_kwargs = position_kwargs or {}
     pdot, qdot = f
     q, p = jnp.split(x, 2)
 
@@ -62,70 +71,33 @@ def _generalized_step(f, t, x, u, dt, tol, max_iter):
         result = fn(time, state, u) if cache is None else fn(time, state, u, cache=cache)
         return result if isinstance(result, tuple) else (result, None)
 
-    def fixed_point(update, initial, first=None):
-        def cond(carry):
-            iteration, _, error, scale = carry
-            return (iteration < max_iter) & (error > tol * scale)
+    # solve the momentum equation, reusing the pdot cache at q
+    pdot_left, cache = evaluate(pdot, t, x, cache)
+    momentum = lambda p_half: evaluate(pdot, t, jnp.concatenate((q, p_half)), cache)[0]
+    p_predictor = p + 0.5 * dt * pdot_left
+    if momentum_solver == "gauss-newton":
+        if "linearize" not in momentum_kwargs:
+            raise ValueError('momentum_solver "gauss-newton" requires linearize in momentum_kwargs')
+        linearize = momentum_kwargs.pop("linearize")
+        residual = lambda p_half: p_half - p - 0.5 * dt * momentum(p_half)
 
-        def step(carry):
-            iteration, value, _, _ = carry
-            candidate = update(value)
-            error = jnp.linalg.norm(candidate - value, ord=jnp.inf)
-            scale = 1.0 + jnp.linalg.norm(candidate, ord=jnp.inf)
-            return iteration + 1, candidate, error, scale
+        def linearize_residual(p_half):
+            (jvp, vjp), _ = linearize(t, jnp.concatenate((q, p_half)), u, cache=cache)
+            jtvp = lambda v: v - 0.5 * dt * vjp(v)
+            return jtvp, lambda v: jtvp(v - 0.5 * dt * jvp(v))
 
-        if first is None:
-            iteration, value = jnp.array(0), initial
-            error = jnp.array(jnp.inf, dtype=initial.dtype)
-            scale = jnp.array(1.0, dtype=initial.dtype)
-        else:
-            # The initial force evaluation already supplies iteration one.
-            iteration = jnp.asarray(max_iter > 0, dtype=jnp.int32)
-            value = jnp.where(max_iter > 0, first, initial)
-            error = jnp.where(
-                max_iter > 0,
-                jnp.linalg.norm(value - initial, ord=jnp.inf),
-                jnp.inf,
-            )
-            scale = 1.0 + jnp.linalg.norm(value, ord=jnp.inf)
+        p_half, p_converged, _ = lstsq(residual, linearize_residual, p_predictor, **momentum_kwargs)
+    else:
+        update_p = lambda p_half: p + 0.5 * dt * momentum(p_half)
+        p_half, p_converged = fixed_point(update_p, p, first=p_predictor, **momentum_kwargs)
 
-        _, value, error, scale = jax.lax.while_loop(
-            cond,
-            step,
-            (iteration, value, error, scale),
-        )
-        return value, error <= tol * scale
+    # solve the position equation; qdot at q_new needs a fresh cache at each iterate
+    qdot_left, _ = evaluate(qdot, t, jnp.concatenate((q, p_half)), cache)
+    update_q = lambda q_new: q + 0.5 * dt * (qdot_left + evaluate(qdot, t + dt, jnp.concatenate((q_new, p_half)))[0])
+    position = anderson if position_solver == "anderson" else fixed_point
+    q_new, q_converged = position(update_q, q + dt * qdot_left, **position_kwargs)
 
-    pdot_initial, cache_left = evaluate(pdot, t, x)
-
-    def update_p_half(p_half):
-        derivative, _ = evaluate(
-            pdot,
-            t,
-            jnp.concatenate((q, p_half)),
-            cache_left,
-        )
-        return p + 0.5 * dt * derivative
-
-    p_half, p_converged = fixed_point(update_p_half, p, first=p + 0.5 * dt * pdot_initial)
-    qdot_left, _ = evaluate(qdot, t, jnp.concatenate((q, p_half)), cache_left)
-
-    def update_q(q_new):
-        qdot_right, _ = evaluate(
-            qdot,
-            t + dt,
-            jnp.concatenate((q_new, p_half)),
-        )
-        return q + 0.5 * dt * (qdot_left + qdot_right)
-
-    q_new, q_converged = fixed_point(update_q, q + dt * qdot_left)
-    # The final position is the output of the last fixed-point update, not
-    # generally the position where its qdot was evaluated. Build a fresh cache.
-    pdot_right, _ = evaluate(
-        pdot,
-        t + dt,
-        jnp.concatenate((q_new, p_half)),
-    )
-    p_new = p_half + 0.5 * dt * pdot_right
-
-    return jnp.concatenate((q_new, p_new)), p_converged & q_converged
+    # explicit final momentum half step at the new position, whose cache starts the next step
+    pdot_right, cache_right = evaluate(pdot, t + dt, jnp.concatenate((q_new, p_half)))
+    x_new = jnp.concatenate((q_new, p_half + 0.5 * dt * pdot_right))
+    return jnp.where(p_converged & q_converged, x_new, jnp.nan), cache_right
