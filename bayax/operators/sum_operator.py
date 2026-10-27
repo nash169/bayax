@@ -6,7 +6,7 @@ from typing import Callable
 import jax
 import jax.numpy as jnp
 
-from bayax.utils.types import Size, Scalar, Array, Vector, Matrix, Self
+from bayax.utils.types import Size, Scalar, Array, Vector, Matrix, Optional, Self
 from bayax.operators.linear_operator import LinearOperator
 from bayax.operators import *
 from jax.scipy.sparse.linalg import cg
@@ -104,14 +104,19 @@ class SumOperator(LinearOperator):
 
     def lowrank(
         self,
+        eps: Scalar = 1e-8,
+        jimg: Optional[Scalar] = None,
+        jker: Optional[Scalar] = None,
         **kwargs
     ) -> LinearOperator:
         from bayax.operators.low_rank_operator import LowRankOperator
         if all(issubclass(type(op), (LowRankOperator, SymOperator)) for op in self._ops):
             eigval, eigvec = self.diagonalize(**kwargs)
-            return LowRankOperator(sval=eigval, left=eigvec)
+            return LowRankOperator(sval=eigval, left=eigvec, eps=eps, jimg=jimg, jker=jker)
         else:
-            return super().lowrank()
+            if jimg is not None or jker is not None:
+                raise NotImplementedError("Jitter implemented only for symmetric operators.")
+            return super().lowrank(eps=eps, **kwargs)
 
     def sqrtf(
         self,
