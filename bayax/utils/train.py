@@ -70,12 +70,16 @@ def train(
     loss_fn: Callable,
     cfg: TrainCfg,
 ):
-    opt = nnx.Optimizer(model, cfg.opt, wrt=nnx.Param)
+    # optimizers without extra args (e.g. adam) ignore value, grad and value_fn
+    opt = nnx.Optimizer(model, optax.with_extra_args_support(cfg.opt), wrt=nnx.Param)
 
     @nnx.jit
     def step(model, opt, x, y):
         loss, grads = nnx.value_and_grad(loss_fn)(model, x, y)
-        opt.update(model, grads)
+        # loss as a function of the parameters, for line searches (e.g. lbfgs)
+        graphdef, _, rest = nnx.split(model, nnx.Param, ...)
+        value_fn = lambda params: loss_fn(nnx.merge(graphdef, params, rest), x, y)
+        opt.update(model, grads, value=loss, grad=grads, value_fn=value_fn)
         return loss
 
     if cfg.record:
