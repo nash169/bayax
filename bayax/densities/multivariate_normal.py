@@ -45,12 +45,23 @@ class MultivariateNormal(AbstractDensity):
     def __call__(
         self,
         x: Vector,
-        **kwargs
+        logdet_kwargs: Optional[dict] = None,
+        invquad_kwargs: Optional[dict] = None,
     ) -> Vector:
         r"""
         Evaluate density.
         """
-        return -0.5 * (self._cov.logdet(**kwargs) + self._cov.size()[0] * jnp.log(2 * jnp.pi) + self._cov.invquad(x - self._mean if hasattr(self, "_mean") else x, **kwargs))
+        return -0.5 * (self._cov.logdet(**(logdet_kwargs or {})) + self._cov.size()[0] * jnp.log(2 * jnp.pi) + self._cov.invquad(x - self._mean if hasattr(self, "_mean") else x, **(invquad_kwargs or {})))
+
+    def mean(
+        self,
+    ):
+        return self._mean
+
+    def cov(
+        self,
+    ):
+        return self._cov
 
     def sample(
         self,
