@@ -4,9 +4,10 @@
 import jax
 import jax.numpy as jnp
 from bayax.utils.types import Scalar, Optional, Tuple, Int
+from bayax.densities.abstract_density import AbstractDensity
 
 
-class Normal:
+class Normal(AbstractDensity):
     def __init__(
         self,
         var: Scalar,
@@ -39,7 +40,7 @@ class Normal:
         seed: Int = 0,
         **kwargs
     ):
-        return self._mean + jax.random.normal(jax.random.key(seed), shape=(size,), **kwargs)
+        return self._mean + jnp.sqrt(self._var) * jax.random.normal(jax.random.key(seed), shape=(size,), **kwargs)
 
     def jvp(
         self,
