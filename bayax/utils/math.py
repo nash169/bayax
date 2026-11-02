@@ -68,20 +68,38 @@ def outer_jacobian(
 def gram(
     k: Callable,
     x: Tensor,
-    jitter: Scalar = 1e-6
+    jitter: Scalar = 1e-6,
+    batch_size: int = 128,
 ) -> Callable:
-    n = x.shape[0]
-    k_diag = jax.vmap(lambda i: k(x[i], x[i]))(jnp.arange(n)).squeeze() + jitter
-    i_off, j_off = jnp.triu_indices(n, k=1)
-    k_off = jax.vmap(lambda i, j: k(x[i], x[j]))(i_off, j_off).squeeze()
+    r"""
+    Matrix-free Gram matrix-vector product. Kernel rows are evaluated on the fly in blocks of
+    batch_size rows and recomputed in the backward pass, so nothing of size n^2 is stored.
+    """
+    row = jax.checkpoint(lambda xi, v: jax.vmap(lambda xj: k(xi, xj))(x).reshape(-1) @ v)
 
     def mv(v):
-        y = k_diag * v
-        y = y.at[i_off].add(k_off * v[j_off])
-        y = y.at[j_off].add(k_off * v[i_off])
-        return y
+        return jax.lax.map(lambda xi: row(xi, v), x, batch_size=batch_size) + jitter * v
 
     return mv
+
+
+# def gram(
+#     k: Callable,
+#     x: Tensor,
+#     jitter: Scalar = 1e-6
+# ) -> Callable:
+#     n = x.shape[0]
+#     k_diag = jax.vmap(lambda i: k(x[i], x[i]))(jnp.arange(n)).squeeze() + jitter
+#     i_off, j_off = jnp.triu_indices(n, k=1)
+#     k_off = jax.vmap(lambda i, j: k(x[i], x[j]))(i_off, j_off).squeeze()
+#
+#     def mv(v):
+#         y = k_diag * v
+#         y = y.at[i_off].add(k_off * v[j_off])
+#         y = y.at[j_off].add(k_off * v[i_off])
+#         return y
+#
+#     return mv
 
 
 def diag_exact(
