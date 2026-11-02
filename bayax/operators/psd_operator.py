@@ -9,6 +9,7 @@ from jax.scipy.sparse.linalg import cg
 from bayax.utils.types import Scalar, Vector, Matrix, Optional, Callable, Array, VectorInt, Self
 from bayax.operators.linear_operator import LinearOperator
 from bayax.operators import DenseOperator, SymOperator
+from bayax.linalg.lanczos import lanczos_tridiag
 
 
 @jax.tree_util.register_pytree_node_class
@@ -85,11 +86,43 @@ class PSDOperator(SymOperator):
 
     def logdet(
         self,
+        num_probes: int = 10,
+        seed: int = 0,
+        **kwargs
     ) -> Scalar:
         r"""
         Return determinant of the linear operator
+
+        Matrix-free operators use stochastic Lanczos quadrature with num_probes Rademacher probes;
+        kwargs go to lanczos_tridiag (e.g. m, reorth). The gradient is the Hutchinson estimate of
+        tr(A^-1 dA) on the same probes, with conjugate gradient solves.
         """
-        return super().logdet() if isinstance(self._op, Callable) else 2 * jnp.sum(jnp.log(jnp.diag(self._op)))
+        if not isinstance(self._op, Callable):
+            return 2 * jnp.sum(jnp.log(jnp.diag(self._op)))
+
+        n = self._op_size
+        kwargs["m"] = min(kwargs.get("m", 64), n)  # Lanczos breaks down after n steps
+
+        probes = jr.rademacher(jr.key(seed), (num_probes, n), dtype=jnp.result_type(float))
+        mv, consts = jax.closure_convert(self._op, probes[0])
+
+        @jax.custom_jvp
+        def slq(*consts):
+            def quadrature(z):
+                alpha, beta, _ = lanczos_tridiag(lambda v: mv(v, *consts), n, v0=z, **kwargs)
+                theta, U = jnp.linalg.eigh(jnp.diag(alpha) + jnp.diag(beta, 1) + jnp.diag(beta, -1))
+                # |z|^2 = n; steps after a Lanczos breakdown give zero eigenvalues with zero weight
+                return n * U[0]**2 @ jnp.log(jnp.where(theta > 0, theta, 1.0))
+            return jnp.mean(jax.vmap(quadrature)(probes))
+
+        @slq.defjvp
+        def slq_jvp(consts, dconsts):
+            def trace(z):
+                dAz = jax.jvp(lambda *c: mv(z, *c), consts, dconsts)[1]
+                return cg(lambda v: mv(v, *consts), z)[0] @ dAz
+            return slq(*consts), jnp.mean(jax.vmap(trace)(probes))
+
+        return slq(*consts)
 
     def invquad(
         self,
