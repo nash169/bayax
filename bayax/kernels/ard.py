@@ -11,4 +11,4 @@ def ard(
     l: Vector,
     tau: Scalar = 1.0
 ):
-    return jnp.exp(-.5 * jnp.sum(jnp.pow(x - y, 2) / l))
+    return jnp.exp(tau) * jnp.exp(-.5 * jnp.sum(jnp.pow(x - y, 2) / jnp.square(jnp.exp(l))))
