@@ -99,9 +99,19 @@ class GP(nnx.Module):
     ):
         return jax.vmap(lambda x: self.kernel(x, x))(X)
 
+    def gram(self, k: Callable, X: Vector | Matrix, noise):
+        r"""
+        PSD operator of k(X, X) + noise I: dense (Cholesky) up to 1000 points, matrix-free above
+        (CG solves and stochastic Lanczos logdet).
+        """
+        if X.shape[0] > 1000:
+            return PSDOperator(op=gram(k, X, noise), op_size=X.shape[0])
+        K = jax.vmap(lambda x: jax.vmap(lambda y: k(x, y))(X))(X).reshape(X.shape[0], X.shape[0])
+        return PSDOperator(op=K + noise * jnp.eye(X.shape[0]), op_type="raw")
+
     def cov(self, X: Vector | Matrix):
         noise = jnp.exp(self.noise).squeeze() + 1e-6
-        return PSDOperator(op=gram(self.kernel, X, noise), op_size=X.shape[0])
+        return self.gram(self.kernel, X, noise)
 
     def __call__(self, X: Vector | Matrix):
         return MultivariateNormal(cov=self.cov(X), mean=jax.vmap(self.mean)(X) if hasattr(self, "mu_fn") else None)
@@ -116,26 +126,32 @@ class GP(nnx.Module):
         y: Vector,
         **kwargs
     ):
+        # K^-1 (y - m(X)) is solved here once, not at every evaluation of the returned function
         k_xy = lambda x: jax.vmap(self.kernel, in_axes=(None, 0))(x, X).squeeze()
         if hasattr(self, "mu_fn"):
-            return lambda x: self.mean(x) + k_xy(x) @ self.cov(X).solve(y.squeeze() - self.mean(X).squeeze(), **kwargs)
-        return lambda x: k_xy(x) @ self.cov(X).solve(y.squeeze(), **kwargs)
+            alpha = self.cov(X).solve(y.squeeze() - self.mean(X).squeeze(), **kwargs)
+            return lambda x: self.mean(x) + k_xy(x) @ alpha
+        alpha = self.cov(X).solve(y.squeeze(), **kwargs)
+        return lambda x: k_xy(x) @ alpha
 
     def posterior_kernel(
         self,
         X: Vector | Matrix,
         **kwargs
     ):
+        # the covariance operator (Cholesky when dense) is built here once
+        K = self.cov(X)
         k_xy = lambda x: jax.vmap(self.kernel, in_axes=(None, 0))(x, X).squeeze()
         k_yx = lambda x: jax.vmap(self.kernel, in_axes=(0, None))(X, x).squeeze()
-        return lambda x, y: self.kernel(x, y) - k_xy(x) @ self.cov(X).solve(k_yx(y), **kwargs)
+        return lambda x, y: self.kernel(x, y) - k_xy(x) @ K.solve(k_yx(y), **kwargs)
 
     def posterior_var(
         self,
         X: Vector | Matrix,
         **kwargs
     ):
-        return lambda x: jax.vmap(lambda z: self.posterior_kernel(X, **kwargs)(z, z))(x)
+        k = self.posterior_kernel(X, **kwargs)
+        return lambda x: jax.vmap(lambda z: k(z, z))(x)
 
     def posterior_cov(
         self,
@@ -143,7 +159,8 @@ class GP(nnx.Module):
         **kwargs
     ):
         noise = jnp.exp(self.noise).squeeze() + 1e-6
-        return lambda x: PSDOperator(op=gram(self.posterior_kernel(X, **kwargs), x, noise), op_size=x.shape[0])
+        k = self.posterior_kernel(X, **kwargs)
+        return lambda x: self.gram(k, x, noise)
 
     def posterior(
         self,
